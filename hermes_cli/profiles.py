@@ -461,7 +461,7 @@ def create_profile(
                 ignored.update(c for c in contents if c in _CLONE_ALL_DEFAULT_EXCLUDE)
             return ignored
 
-        shutil.copytree(source_dir, profile_dir, ignore=_ignore)
+        shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_ignore)
         # Strip any remaining runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
