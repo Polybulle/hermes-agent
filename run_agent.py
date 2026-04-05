@@ -6295,7 +6295,15 @@ class AIAgent:
                 _model_output_limit = _get_anthropic_max_output(self.model)
                 api_kwargs["max_tokens"] = _model_output_limit
             except Exception:
-                pass  # fail open — let the proxy pick its default
+                pass  # fail open — let OpenRouter pick its default
+        elif self._is_openrouter_url() and any(
+            p in (self.model or "").lower()
+            for p in ("minimax", "deepseek-r1", "qwq", "thinking")
+        ):
+            # Other thinking models have the same budget problem: reasoning
+            # tokens crowd out the actual response when OpenRouter's default
+            # is too low.  A generous ceiling prevents silent empty replies.
+            api_kwargs["max_tokens"] = 8192
 
         extra_body = {}
 
