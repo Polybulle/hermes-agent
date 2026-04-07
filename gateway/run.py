@@ -8861,14 +8861,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             remove_pid_file()
-            # Also release all scoped locks left by the old process.
-            # Stopped (Ctrl+Z) processes don't release locks on exit,
-            # leaving stale lock files that block the new gateway from starting.
+            # Release only the replaced process's locks — not other profiles'.
             try:
-                from gateway.status import release_all_scoped_locks
-                _released = release_all_scoped_locks()
+                from gateway.status import release_stale_scoped_locks
+                _released = release_stale_scoped_locks(replaced_pid=existing_pid)
                 if _released:
-                    logger.info("Released %d stale scoped lock(s) from old gateway.", _released)
+                    logger.info("Released %d scoped lock(s) from replaced gateway (PID %d).", _released, existing_pid)
             except Exception:
                 pass
         else:

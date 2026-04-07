@@ -404,22 +404,43 @@ def release_scoped_lock(scope: str, identity: str) -> None:
         pass
 
 
-def release_all_scoped_locks() -> int:
-    """Remove all scoped lock files in the lock directory.
+def _try_unlink(path: Path) -> bool:
+    """Delete *path* if possible, return True on success."""
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
 
-    Called during --replace to clean up stale locks left by stopped/killed
-    gateway processes that did not release their locks gracefully.
-    Returns the number of lock files removed.
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def release_stale_scoped_locks(*, replaced_pid: Optional[int] = None) -> int:
+    """Remove scoped locks that are stale or belong to *replaced_pid*.
+
+    When *replaced_pid* is given, only that process's locks are removed.
+    Otherwise, removes locks whose owning process is dead.
     """
     lock_dir = _get_lock_dir()
+    if not lock_dir.exists():
+        return 0
     removed = 0
-    if lock_dir.exists():
-        for lock_file in lock_dir.glob("*.lock"):
-            try:
-                lock_file.unlink(missing_ok=True)
-                removed += 1
-            except OSError:
-                pass
+    for lock_file in lock_dir.glob("*.lock"):
+        try:
+            record = json.loads(lock_file.read_text())
+            lock_pid = int(record["pid"])
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            removed += _try_unlink(lock_file)
+            continue
+        should_remove = (lock_pid == replaced_pid) if replaced_pid is not None else not _pid_is_alive(lock_pid)
+        if should_remove:
+            removed += _try_unlink(lock_file)
     return removed
 
 
