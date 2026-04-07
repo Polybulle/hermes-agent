@@ -2063,6 +2063,11 @@ class GatewayRunner:
             self._running_agents.clear()
             self._pending_messages.clear()
             self._pending_approvals.clear()
+
+            shutdown_honcho = getattr(self, "_shutdown_all_gateway_honcho", None)
+            if callable(shutdown_honcho):
+                shutdown_honcho()
+
             self._shutdown_event.set()
 
             # Global cleanup: kill any remaining tool subprocesses not tied
