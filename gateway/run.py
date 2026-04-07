@@ -3174,6 +3174,11 @@ class GatewayRunner:
             self._pending_approvals.clear()
             if hasattr(self, '_busy_ack_ts'):
                 self._busy_ack_ts.clear()
+
+            shutdown_honcho = getattr(self, "_shutdown_all_gateway_honcho", None)
+            if callable(shutdown_honcho):
+                shutdown_honcho()
+
             self._shutdown_event.set()
 
             # Global cleanup: kill any remaining tool subprocesses not tied
