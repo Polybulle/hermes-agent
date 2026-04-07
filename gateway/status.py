@@ -17,10 +17,13 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
+
+_IS_DARWIN = sys.platform == "darwin"
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
@@ -88,27 +91,50 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
-def _get_process_start_time(pid: int) -> Optional[int]:
-    """Return the kernel start time for a process when available."""
-    stat_path = Path(f"/proc/{pid}/stat")
+def _ps(pid: int, fmt: str) -> Optional[str]:
+    """Run ``ps -o <fmt>= -p <pid>`` and return stripped output, or None."""
     try:
-        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text().split()[21])
-    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        r = subprocess.run(
+            ["ps", "-o", f"{fmt}=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=5,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+        out = r.stdout.strip() if r.returncode == 0 else None
+        return out or None
+    except (subprocess.TimeoutExpired, OSError):
         return None
+
+
+def _get_process_start_time(pid: int) -> Optional[int]:
+    """Return a stable process start timestamp, or None.
+
+    Linux: clock ticks from /proc. macOS: epoch seconds via ps.
+    """
+    try:
+        return int(Path(f"/proc/{pid}/stat").read_text().split()[21])
+    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+    if _IS_DARWIN:
+        lstart = _ps(pid, "lstart")
+        if lstart:
+            try:
+                return int(time.mktime(time.strptime(lstart, "%a %b %d %H:%M:%S %Y")))
+            except (ValueError, OverflowError):
+                pass
+    return None
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
-    """Return the process command line as a space-separated string."""
-    cmdline_path = Path(f"/proc/{pid}/cmdline")
+    """Return the process command line as a string, or None."""
     try:
-        raw = cmdline_path.read_bytes()
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        if raw:
+            return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
     except (FileNotFoundError, PermissionError, OSError):
-        return None
-
-    if not raw:
-        return None
-    return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+        pass
+    if _IS_DARWIN:
+        return _ps(pid, "command")
+    return None
 
 
 def _looks_like_gateway_process(pid: int) -> bool:
