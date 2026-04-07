@@ -97,8 +97,10 @@ def _apply_profile_override() -> None:
             consume = 1
             break
 
-    # 2. If no flag, check active_profile in the hermes root
-    if profile_name is None:
+    # 2. If no flag AND HERMES_HOME isn't already set to a profile dir,
+    #    check ~/.hermes/active_profile.  LaunchAgent gateways set HERMES_HOME
+    #    via the plist — active_profile must not override that.
+    if profile_name is None and "profiles" not in os.environ.get("HERMES_HOME", ""):
         try:
             from hermes_constants import get_default_hermes_root
             active_path = get_default_hermes_root() / "active_profile"
