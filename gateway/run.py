@@ -7494,10 +7494,10 @@ class GatewayRunner:
                 return
             last_tool[0] = tool_name
             
-            # Build progress message with primary argument preview
-            from agent.display import get_tool_emoji
+            # Build progress message using the same formatter as CLI
+            from agent.display import get_tool_emoji, get_cute_tool_message
             emoji = get_tool_emoji(tool_name, default="⚙️")
-            
+
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if args:
