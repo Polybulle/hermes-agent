@@ -255,8 +255,8 @@ class HonchoSessionManager:
         return session, existing_messages
 
     def _sanitize_id(self, id_str: str) -> str:
-        """Sanitize an ID to match Honcho's pattern: ^[a-zA-Z0-9_-]+"""
-        return re.sub(r'[^a-zA-Z0-9_-]', '-', id_str)
+        """Sanitize an ID to match Honcho's pattern: ^[a-zA-Z0-9_-]+$"""
+        return re.sub(r'-+', '-', re.sub(r'[^a-zA-Z0-9_-]', '-', id_str)).strip('-') or 'hermes'
 
     def get_or_create(self, key: str) -> HonchoSession:
         """
