@@ -58,6 +58,17 @@ def resolve_global_config_path() -> Path:
     return Path.home() / ".honcho" / "config.json"
 
 
+def _sanitize_for_honcho_id(raw: str) -> str:
+    """Convert any string to a Honcho-compatible ID."""
+    import re
+    return re.sub(r"-+", "-", re.sub(r"[^a-zA-Z0-9_-]", "-", raw)).strip("-") or "hermes"
+
+
+def _profile_from_host(host: str) -> str:
+    """Return the bare profile portion from hermes.<profile> style hosts."""
+    return host.split(".", 1)[1] if "." in host else host
+
+
 def resolve_config_path() -> Path:
     """Return the active Honcho config path.
 
@@ -328,7 +339,7 @@ class HonchoClientConfig:
             environment=os.environ.get("HONCHO_ENVIRONMENT", "production"),
             base_url=base_url,
             timeout=timeout,
-            ai_peer=resolved_host,
+            ai_peer=_sanitize_for_honcho_id(_profile_from_host(resolved_host)),
             enabled=bool(api_key or base_url),
         )
 
@@ -364,13 +375,19 @@ class HonchoClientConfig:
         workspace = (
             host_block.get("workspace")
             or raw.get("workspace")
-            or resolved_host
+            or _profile_from_host(resolved_host)
         )
+        workspace = _sanitize_for_honcho_id(str(workspace))
         ai_peer = (
             host_block.get("aiPeer")
             or raw.get("aiPeer")
-            or resolved_host
+            or (
+                resolved_host.split(".", 1)[1]
+                if "." in resolved_host
+                else resolved_host
+            )
         )
+        ai_peer = _sanitize_for_honcho_id(str(ai_peer))
         api_key = (
             host_block.get("apiKey")
             or raw.get("apiKey")
