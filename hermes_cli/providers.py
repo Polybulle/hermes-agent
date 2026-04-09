@@ -90,7 +90,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "xiaomi-token-plan": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://token-plan-ams.xiaomimimo.com/v1",
-        base_url_env_var="XIAOMI_MIMO_TP_BASE_URL",
     ),
     "minimax": HermesOverlay(
         transport="openai_chat",

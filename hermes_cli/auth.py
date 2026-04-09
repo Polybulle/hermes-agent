@@ -166,7 +166,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="api_key",
         inference_base_url="https://token-plan-ams.xiaomimimo.com/v1",
         api_key_env_vars=("XIAOMI_MIMO_TP_API_KEY",),
-        base_url_env_var="XIAOMI_MIMO_TP_BASE_URL",
     ),
     "minimax": ProviderConfig(
         id="minimax",

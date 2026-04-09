@@ -72,7 +72,7 @@ class TestProviderRegistry:
     def test_xiaomi_token_plan_env_vars(self):
         pconfig = PROVIDER_REGISTRY["xiaomi-token-plan"]
         assert pconfig.api_key_env_vars == ("XIAOMI_MIMO_TP_API_KEY",)
-        assert pconfig.base_url_env_var == "XIAOMI_MIMO_TP_BASE_URL"
+        assert pconfig.base_url_env_var == ""
 
     def test_minimax_env_vars(self):
         pconfig = PROVIDER_REGISTRY["minimax"]
@@ -127,7 +127,7 @@ PROVIDER_ENV_VARS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
-    "XIAOMI_MIMO_TP_API_KEY", "XIAOMI_MIMO_TP_BASE_URL",
+    "XIAOMI_MIMO_TP_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
