@@ -154,6 +154,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        self._polling_conflict_reset_task: Optional[asyncio.Task] = None
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
@@ -263,6 +264,9 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_polling_conflict(self, error: Exception) -> None:
         if self.has_fatal_error and self.fatal_error_code == "telegram_polling_conflict":
             return
+        if self._polling_conflict_reset_task and not self._polling_conflict_reset_task.done():
+            self._polling_conflict_reset_task.cancel()
+            self._polling_conflict_reset_task = None
         # Track consecutive conflicts — transient 409s can occur when a
         # previous gateway instance hasn't fully released its long-poll
         # session on Telegram's server (e.g. during --replace handoffs or
@@ -292,7 +296,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     error_callback=self._polling_error_callback_ref,
                 )
                 logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
-                self._polling_conflict_count = 0  # reset on success
+                self._schedule_polling_conflict_reset()
                 return
             except Exception as retry_err:
                 logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
@@ -317,6 +321,24 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as stop_error:
             logger.warning("[%s] Failed stopping Telegram polling after conflict: %s", self.name, stop_error, exc_info=True)
         await self._notify_fatal_error()
+
+    def _schedule_polling_conflict_reset(self, delay: int = 60) -> None:
+        """Reset the conflict counter only after a conflict-free cooldown."""
+        if self._polling_conflict_reset_task and not self._polling_conflict_reset_task.done():
+            self._polling_conflict_reset_task.cancel()
+
+        async def _reset_after_delay() -> None:
+            try:
+                await asyncio.sleep(delay)
+                self._polling_conflict_count = 0
+                logger.info("[%s] Telegram polling conflict counter reset after %ds", self.name, delay)
+            except asyncio.CancelledError:
+                raise
+            finally:
+                if asyncio.current_task() is self._polling_conflict_reset_task:
+                    self._polling_conflict_reset_task = None
+
+        self._polling_conflict_reset_task = asyncio.create_task(_reset_after_delay())
 
     async def _create_dm_topic(
         self,
@@ -739,6 +761,10 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.gather(*pending_media_group_tasks, return_exceptions=True)
         self._media_group_tasks.clear()
         self._media_group_events.clear()
+        if self._polling_conflict_reset_task and not self._polling_conflict_reset_task.done():
+            self._polling_conflict_reset_task.cancel()
+            await asyncio.gather(self._polling_conflict_reset_task, return_exceptions=True)
+        self._polling_conflict_reset_task = None
 
         if self._app:
             try:

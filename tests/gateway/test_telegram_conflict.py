@@ -115,17 +115,31 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     assert callable(captured["error_callback"])
 
     conflict = type("Conflict", (Exception,), {})
+    schedule_reset = MagicMock()
+    monkeypatch.setattr(adapter, "_schedule_polling_conflict_reset", schedule_reset)
 
     # First conflict: should retry, NOT be fatal
-    captured["error_callback"](conflict("Conflict: terminated by other getUpdates request"))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    # Give the scheduled task a chance to run
-    for _ in range(10):
-        await asyncio.sleep(0)
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
 
     assert adapter.has_fatal_error is False, "First conflict should not be fatal"
-    assert adapter._polling_conflict_count == 0, "Count should reset after successful retry"
+    assert adapter._polling_conflict_count == 1, "Count should stay elevated until the cooldown expires"
+    schedule_reset.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_polling_conflict_counter_resets_after_cooldown(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    adapter._polling_conflict_count = 1
+    adapter._schedule_polling_conflict_reset(delay=0)
+
+    assert adapter._polling_conflict_reset_task is not None
+    await adapter._polling_conflict_reset_task
+    assert adapter._polling_conflict_count == 0
+    assert adapter._polling_conflict_reset_task is None
 
 
 @pytest.mark.asyncio
