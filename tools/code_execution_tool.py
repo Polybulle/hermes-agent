@@ -1581,6 +1581,13 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
                         "and print your final result to stdout."
                     ),
                 },
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "One-line human-readable summary of what this code does. "
+                        "Shown in the tool activity feed. Always provide this."
+                    ),
+                },
             },
             "required": ["code"],
         },

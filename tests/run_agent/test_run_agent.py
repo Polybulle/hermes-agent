@@ -1662,7 +1662,8 @@ class TestExecuteToolCalls:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
 
         mock_print.assert_called_once()
-        assert "search" in str(mock_print.call_args.args[0]).lower()
+        rendered = str(mock_print.call_args.args[0])
+        assert "🔍" in rendered
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
 
