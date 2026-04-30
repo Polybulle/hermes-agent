@@ -52,23 +52,21 @@ class TestHonchoClientConfigAutoEnable:
         assert cfg.api_key == "test-api-key-12345"
         assert cfg.enabled is True
 
-    def test_disabled_when_no_api_key_and_no_explicit_enabled(self, tmp_path):
-        """When no API key and enabled not set, should be disabled."""
+    def test_disabled_when_no_api_key_and_no_explicit_enabled(self, tmp_path, monkeypatch):
+        """When no API key, no base URL, and enabled not set, should be disabled."""
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({
             "workspace": "test",
             # No apiKey, no enabled
         }))
 
-        # Clear env var if set
-        env_key = os.environ.pop("HONCHO_API_KEY", None)
-        try:
-            cfg = HonchoClientConfig.from_global_config(config_path=config_path)
-            assert cfg.api_key is None
-            assert cfg.enabled is False  # No API key = not enabled
-        finally:
-            if env_key:
-                os.environ["HONCHO_API_KEY"] = env_key
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+        monkeypatch.delenv("HONCHO_BASE_URL", raising=False)
+
+        cfg = HonchoClientConfig.from_global_config(config_path=config_path)
+        assert cfg.api_key is None
+        assert cfg.base_url is None
+        assert cfg.enabled is False
 
     def test_auto_enables_with_env_var_api_key(self, tmp_path, monkeypatch):
         """When API key is in env var (not config), should auto-enable."""

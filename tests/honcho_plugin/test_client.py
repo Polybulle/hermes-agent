@@ -450,7 +450,7 @@ class TestProfileScopedConfig:
             config = HonchoClientConfig.from_env(host="hermes.coder")
         assert config.host == "hermes.coder"
         assert config.workspace_id == "hermes"  # shared workspace
-        assert config.ai_peer == "hermes.coder"
+        assert config.ai_peer == "coder"
 
     def test_from_env_default_workspace_preserved_for_default_host(self):
         with patch.dict(os.environ, {"HONCHO_API_KEY": "key"}):
@@ -476,7 +476,7 @@ class TestProfileScopedConfig:
         )
         assert config.host == "hermes.coder"
         assert config.workspace_id == "coder-ws"
-        assert config.ai_peer == "hermes.coder"
+        assert config.ai_peer == "hermes-coder"
         assert config.peer_name == "alice-coder"
 
     def test_from_global_config_auto_resolves_host(self, tmp_path):
