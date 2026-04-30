@@ -1547,6 +1547,47 @@ class TestBuildAssistantMessage:
         assert result["content"] == ""
 
 
+class TestPluginSyntheticToolInjection:
+    def test_normalize_plugin_synthetic_tool_events_filters_invalid_rows(self, agent):
+        hook_result = {
+            "synthetic_tool_events": [
+                {"name": "somatic_inject", "arguments": {"mood": "moody"}, "result": "<mood>a</mood>"},
+                {"name": "", "arguments": {}, "result": "bad-empty-name"},
+                {"name": "missing_result", "arguments": {}},
+                "not-a-dict",
+            ]
+        }
+
+        events = agent._normalize_plugin_synthetic_tool_events(hook_result)
+        assert len(events) == 1
+        assert events[0]["name"] == "somatic_inject"
+        assert events[0]["arguments"] == {"mood": "moody"}
+        assert events[0]["result"] == "<mood>a</mood>"
+
+    def test_build_plugin_synthetic_tool_messages_returns_assistant_and_tool_rows(self, agent):
+        base_messages = [{"role": "user", "content": "hello"}]
+        events = [
+            {
+                "name": "somatic_inject",
+                "arguments": {"mood": "reflect", "source": "router"},
+                "result": "<mood>reflect capsule</mood>",
+                "preview": "mood=reflect source=router",
+            }
+        ]
+
+        synthetic_messages, tool_rows = agent._build_plugin_synthetic_tool_messages(events)
+
+        # Helper must not mutate caller history (ephemeral API-message use case)
+        assert len(base_messages) == 1
+        assert len(synthetic_messages) == 2
+        assert synthetic_messages[0]["role"] == "assistant"
+        assert synthetic_messages[0]["finish_reason"] == "tool_calls"
+        assert synthetic_messages[1]["role"] == "tool"
+        assert synthetic_messages[1]["content"] == "<mood>reflect capsule</mood>"
+        assert len(tool_rows) == 1
+        assert tool_rows[0][1] == "somatic_inject"
+
+
 class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):
         agent.tools = []
@@ -2210,6 +2251,86 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_pre_llm_synthetic_tool_rows_are_ephemeral_and_ordered_before_model_turn(self, agent):
+        self._setup_agent(agent)
+        progress_events = []
+        start_events = []
+        complete_events = []
+
+        def _progress(event_type, tool_name=None, preview=None, function_args=None, **kwargs):
+            progress_events.append((event_type, tool_name, preview, function_args, kwargs))
+
+        def _start(tool_call_id, function_name, function_args):
+            start_events.append((tool_call_id, function_name, function_args))
+
+        def _complete(tool_call_id, function_name, function_args, function_result):
+            complete_events.append((tool_call_id, function_name, function_args, function_result))
+
+        agent.tool_progress_callback = _progress
+        agent.tool_start_callback = _start
+        agent.tool_complete_callback = _complete
+
+        resp = _mock_response(content="ok", finish_reason="stop")
+        captured_api_messages = []
+
+        def _capture_api_call(api_kwargs):
+            captured_api_messages.append(api_kwargs["messages"])
+            return resp
+
+        def _hook(name, **kwargs):
+            if name == "pre_llm_call":
+                return [
+                    {
+                        "synthetic_tool_events": [
+                            {
+                                "name": "somatic_inject",
+                                "arguments": {"mood": "reflect", "source": "router"},
+                                "result": "<mood>reflect capsule</mood>",
+                                "preview": "mood=reflect source=router",
+                            }
+                        ]
+                    }
+                ]
+            return []
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_capture_api_call),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "ok"
+        assert result["api_calls"] == 1
+        assert len(captured_api_messages) == 1
+
+        api_messages = captured_api_messages[0]
+        user_idx = next(i for i, m in enumerate(api_messages) if m.get("role") == "user" and m.get("content") == "hello")
+        assert api_messages[user_idx + 1]["role"] == "assistant"
+        assert api_messages[user_idx + 1]["tool_calls"][0]["function"]["name"] == "somatic_inject"
+        assert api_messages[user_idx + 2]["role"] == "tool"
+        assert api_messages[user_idx + 2]["content"] == "<mood>reflect capsule</mood>"
+
+        # Ephemeral: synthetic rows should not be persisted to stored history.
+        persisted_messages = result["messages"]
+        assert not any(
+            m.get("role") == "assistant"
+            and isinstance(m.get("tool_calls"), list)
+            and any(tc.get("function", {}).get("name") == "somatic_inject" for tc in m.get("tool_calls", []))
+            for m in persisted_messages
+        )
+        assert not any(
+            m.get("role") == "tool" and m.get("content") == "<mood>reflect capsule</mood>"
+            for m in persisted_messages
+        )
+
+        tool_progress_kinds = [evt[0] for evt in progress_events if str(evt[0]).startswith("tool.")]
+        assert tool_progress_kinds == ["tool.started", "tool.completed"]
+        assert len(start_events) == 1
+        assert len(complete_events) == 1
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)

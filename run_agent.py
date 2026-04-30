@@ -39,7 +39,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -8878,6 +8878,168 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
+
+    def _normalize_plugin_synthetic_tool_events(self, hook_result: Any) -> List[Dict[str, Any]]:
+        """Extract synthetic tool events from a plugin pre_llm_call return value.
+
+        Supported key on hook_result (dict):
+          - synthetic_tool_events: list[dict]
+
+        Each event dict supports:
+          - name: tool name (string, required)
+          - arguments: dict args (optional, default {})
+          - result: tool result content (string, required)
+          - preview: optional short label for UI progress
+        """
+        if not isinstance(hook_result, dict):
+            return []
+
+        raw_events = hook_result.get("synthetic_tool_events")
+        if not isinstance(raw_events, list):
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        for item in raw_events:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            result = item.get("result")
+            if not isinstance(result, str) or not result.strip():
+                continue
+            args = item.get("arguments")
+            if not isinstance(args, dict):
+                args = {}
+            preview = item.get("preview")
+            normalized.append(
+                {
+                    "name": name.strip(),
+                    "arguments": args,
+                    "result": result,
+                    "preview": preview if isinstance(preview, str) and preview.strip() else None,
+                }
+            )
+        return normalized
+
+    def _build_plugin_synthetic_tool_messages(
+        self,
+        events: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], List[Tuple[str, str, Dict[str, Any], str, Optional[str]]]]:
+        """Build assistant/tool message rows for plugin synthetic tool events.
+
+        Returns:
+            (synthetic_messages, tool_rows)
+            - synthetic_messages: API-compatible assistant tool-call + tool-result rows
+            - tool_rows: (call_id, name, args, result_text, preview) for callbacks/logging
+        """
+        if not events:
+            return [], []
+
+        assistant_tool_calls: List[Dict[str, Any]] = []
+        tool_messages: List[Dict[str, Any]] = []
+        tool_rows: List[Tuple[str, str, Dict[str, Any], str, Optional[str]]] = []
+
+        for idx, event in enumerate(events):
+            name = str(event.get("name") or "").strip()
+            if not name:
+                continue
+            args = event.get("arguments") if isinstance(event.get("arguments"), dict) else {}
+            result_text = event.get("result") if isinstance(event.get("result"), str) else ""
+            if not result_text:
+                continue
+
+            args_json = json.dumps(args, ensure_ascii=False)
+            call_id = self._deterministic_call_id(name, args_json, idx)
+
+            response_item_id = self._derive_responses_function_call_id(call_id, None)
+            assistant_tool_calls.append(
+                {
+                    "id": call_id,
+                    "call_id": call_id,
+                    "response_item_id": response_item_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": args_json,
+                    },
+                }
+            )
+            tool_messages.append(
+                {
+                    "role": "tool",
+                    "content": result_text,
+                    "tool_call_id": call_id,
+                }
+            )
+            preview = event.get("preview")
+            tool_rows.append(
+                (
+                    call_id,
+                    name,
+                    args,
+                    result_text,
+                    preview if isinstance(preview, str) and preview.strip() else None,
+                )
+            )
+
+        if not assistant_tool_calls:
+            return [], []
+
+        synthetic_messages: List[Dict[str, Any]] = [
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning": None,
+                "finish_reason": "tool_calls",
+                "tool_calls": assistant_tool_calls,
+            }
+        ]
+        synthetic_messages.extend(tool_messages)
+        return synthetic_messages, tool_rows
+
+    def _emit_plugin_synthetic_tool_callbacks(
+        self,
+        tool_rows: List[Tuple[str, str, Dict[str, Any], str, Optional[str]]],
+    ) -> None:
+        """Emit synthetic tool lifecycle callbacks so UI/gateway can render events."""
+        for call_id, name, args, result_text, preview in tool_rows:
+            try:
+                if self.tool_progress_callback:
+                    rendered_preview = preview if isinstance(preview, str) and preview.strip() else _build_tool_preview(name, args)
+                    self.tool_progress_callback("tool.started", name, rendered_preview, args)
+            except Exception as cb_err:
+                logger.debug("Synthetic tool progress(started) callback error: %s", cb_err)
+
+            try:
+                if self.tool_start_callback:
+                    self.tool_start_callback(call_id, name, args)
+            except Exception as cb_err:
+                logger.debug("Synthetic tool start callback error: %s", cb_err)
+
+            is_error, _ = _detect_tool_failure(name, result_text)
+            try:
+                if self.tool_progress_callback:
+                    self.tool_progress_callback(
+                        "tool.completed",
+                        name,
+                        None,
+                        None,
+                        duration=0.0,
+                        is_error=is_error,
+                    )
+            except Exception as cb_err:
+                logger.debug("Synthetic tool progress(completed) callback error: %s", cb_err)
+
+            try:
+                if self.tool_complete_callback:
+                    self.tool_complete_callback(call_id, name, args, result_text)
+            except Exception as cb_err:
+                logger.debug("Synthetic tool complete callback error: %s", cb_err)
+
+            logger.info("plugin synthetic tool injected: %s (%d chars)", name, len(result_text))
+
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -10386,8 +10548,13 @@ class AIAgent:
         # are reused.  The system prompt is Hermes's territory; plugins
         # contribute context alongside the user's input.
         #
-        # All injected context is ephemeral (not persisted to session DB).
+        # All injected context from `context` keys is ephemeral (not persisted to
+        # session DB). Synthetic tool events are handled separately: when a plugin
+        # returns `synthetic_tool_events`, those are injected into API messages
+        # as assistant tool-calls + tool results before the normal turn.
         _plugin_user_context = ""
+        _plugin_synthetic_tool_events: List[Dict[str, Any]] = []
+        _plugin_synthetic_api_messages: List[Dict[str, Any]] = []
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _pre_results = _invoke_hook(
@@ -10402,14 +10569,26 @@ class AIAgent:
             )
             _ctx_parts: list[str] = []
             for r in _pre_results:
-                if isinstance(r, dict) and r.get("context"):
-                    _ctx_parts.append(str(r["context"]))
+                if isinstance(r, dict):
+                    if r.get("context"):
+                        _ctx_parts.append(str(r["context"]))
+                    _plugin_synthetic_tool_events.extend(self._normalize_plugin_synthetic_tool_events(r))
                 elif isinstance(r, str) and r.strip():
                     _ctx_parts.append(r)
             if _ctx_parts:
                 _plugin_user_context = "\n\n".join(_ctx_parts)
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
+
+        if _plugin_synthetic_tool_events:
+            try:
+                _plugin_synthetic_api_messages, _plugin_synthetic_tool_rows = self._build_plugin_synthetic_tool_messages(
+                    _plugin_synthetic_tool_events
+                )
+                if _plugin_synthetic_tool_rows:
+                    self._emit_plugin_synthetic_tool_callbacks(_plugin_synthetic_tool_rows)
+            except Exception as exc:
+                logger.warning("plugin synthetic tool injection failed: %s", exc)
 
         # Main conversation loop
         api_call_count = 0
@@ -10634,6 +10813,21 @@ class AIAgent:
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
+
+            # Ephemeral synthetic plugin events: inject assistant tool-call + tool-result
+            # rows for this turn into API messages only. These rows are visible via
+            # callbacks but are not persisted into session history.
+            if _plugin_synthetic_api_messages:
+                insert_at = current_turn_user_idx + 1
+                if insert_at < 0:
+                    insert_at = 0
+                if insert_at > len(api_messages):
+                    insert_at = len(api_messages)
+                api_messages = (
+                    api_messages[:insert_at]
+                    + [row.copy() for row in _plugin_synthetic_api_messages]
+                    + api_messages[insert_at:]
+                )
 
             # Build the final system message: cached prompt + ephemeral system prompt.
             # Ephemeral additions are API-call-time only (not persisted to session DB).
