@@ -294,6 +294,15 @@ class TestChatCompletionsBuildKwargs:
         # Anthropic Messages API which requires the field.
         assert kw["max_tokens"] == 64000
 
+    def test_openrouter_thinking_models_get_default_output_budget(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="deepseek-r1", messages=msgs,
+            is_openrouter=True,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["max_tokens"] == 8192
+
     def test_request_overrides_last(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

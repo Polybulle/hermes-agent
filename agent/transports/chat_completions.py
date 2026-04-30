@@ -278,6 +278,14 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs.update(max_tokens_fn(32000))
         elif anthropic_max_out is not None:
             api_kwargs["max_tokens"] = anthropic_max_out
+        elif params.get("is_openrouter", False) and max_tokens_fn and any(
+            pattern in model_lower
+            for pattern in ("minimax", "deepseek-r1", "qwq", "thinking")
+        ):
+            # Other OpenRouter thinking models can silently exhaust the proxy's
+            # low default output budget on reasoning tokens alone, returning an
+            # empty or near-empty visible response. Give them a real ceiling.
+            api_kwargs.update(max_tokens_fn(8192))
 
         # Kimi: top-level reasoning_effort (unless thinking disabled)
         if is_kimi:
