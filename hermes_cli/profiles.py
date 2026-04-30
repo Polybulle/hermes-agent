@@ -71,28 +71,45 @@ _CLONE_ALL_STRIP = [
     "processes.json",
 ]
 
+# Root-level entries to exclude during --clone-all when the source is the
+# default (~/.hermes) profile. The default profile contains infrastructure
+# (repo checkout, virtualenv, git worktrees, installed binaries) that named
+# profiles never have. Everything else (state.db, sessions, logs, caches)
+# is profile data — clone-all means "complete snapshot".
+_CLONE_ALL_DEFAULT_EXCLUDE = frozenset({
+    "hermes-agent",         # repo checkout + venv + node_modules (~2 GB)
+    ".worktrees",           # git worktrees
+    "profiles",             # other profiles — never recursive-clone
+    "bin",                  # installed binaries (tirith, etc.)
+    "node_modules",         # npm packages (if any at root level)
+})
+
 
 def _clone_all_copytree_ignore(source_dir: Path):
-    """Ignore ``profiles/`` at the root of *source_dir* only.
+    """Ignore clone-all root entries that are not part of portable profile data.
 
     ``~/.hermes`` contains ``profiles/<name>/`` for sibling named profiles.
-    ``shutil.copytree`` would otherwise duplicate that entire tree inside the
-    new profile (recursive ``.../profiles/.../profiles/...``). Export already
-    excludes ``profiles`` via ``_DEFAULT_EXPORT_EXCLUDE_ROOT`` — match that
-    behavior for ``--clone-all``.
+    When cloning from the default profile we also exclude root-level
+    infrastructure directories like ``hermes-agent/`` and ``bin/``.
     """
     source_resolved = source_dir.resolve()
+    is_default = source_resolved == _get_default_hermes_home().resolve()
 
     def _ignore(directory: str, names: List[str]) -> List[str]:
         try:
             if Path(directory).resolve() == source_resolved:
-                return [n for n in names if n == "profiles"]
+                ignored = [n for n in names if n == "profiles"]
+                if is_default:
+                    ignored.extend(
+                        n for n in names
+                        if n in _CLONE_ALL_DEFAULT_EXCLUDE and n not in ignored
+                    )
+                return ignored
         except (OSError, ValueError):
             pass
         return []
 
     return _ignore
-
 
 # Directories/files to exclude when exporting the default (~/.hermes) profile.
 # The default profile contains infrastructure (repo checkout, worktrees, DBs,
@@ -447,10 +464,13 @@ def create_profile(
             )
 
     if clone_all and source_dir:
-        # Full copy of source profile (exclude sibling ~/.hermes/profiles/)
+        # Full copy of source profile data. Exclude nested sibling profiles for
+        # all sources, and exclude default-profile infrastructure at the root of
+        # ~/.hermes when cloning from the default profile.
         shutil.copytree(
             source_dir,
             profile_dir,
+            symlinks=True,
             ignore=_clone_all_copytree_ignore(source_dir),
         )
         # Strip runtime files
